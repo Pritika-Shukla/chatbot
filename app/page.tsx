@@ -4,60 +4,48 @@ import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { useState, useRef, useEffect, useMemo } from 'react';
 
-const SECRET_KEY_STORAGE = 'chatbot_secret_key';
-
 export default function Page() {
-  const [secretKey, setSecretKey] = useState<string | null>(null);
-  const [loginKey, setLoginKey] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+  const [systemPrompt, setSystemPrompt] = useState('');
   const [input, setInput] = useState('');
-  const [isLoadingPrompt, setIsLoadingPrompt] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [savedPrompt, setSavedPrompt] = useState('You are a helpful assistant.');
+  const [savedPrompt, setSavedPrompt] = useState('');
   const systemPromptRef = useRef(systemPrompt);
   
-  // Load secret key from localStorage on mount
-  useEffect(() => {
-    const storedKey = localStorage.getItem(SECRET_KEY_STORAGE);
-    if (storedKey) {
-      setSecretKey(storedKey);
-    }
-  }, []);
-  
-  // Check if prompt has unsaved changes
   const hasUnsavedChanges = systemPrompt !== savedPrompt;
   
-  // Load system prompt from MongoDB on mount
   useEffect(() => {
     const loadPrompt = async () => {
       try {
         const response = await fetch('/api/prompt');
         if (response.ok) {
           const data = await response.json();
-          const prompt = data.prompt || 'You are a helpful assistant.';
+          const prompt = data.prompt || '';
           setSystemPrompt(prompt);
           setSavedPrompt(prompt);
           systemPromptRef.current = prompt;
+        } else {
+          const fallback = 'You are a helpful assistant.';
+          setSystemPrompt(fallback);
+          setSavedPrompt(fallback);
+          systemPromptRef.current = fallback;
         }
       } catch (error) {
         console.error('Error loading prompt:', error);
-      } finally {
-        setIsLoadingPrompt(false);
+        const fallback = 'You are a helpful assistant.';
+        setSystemPrompt(fallback);
+        setSavedPrompt(fallback);
+        systemPromptRef.current = fallback;
       }
     };
     
     loadPrompt();
   }, []);
   
-  // Update ref when systemPrompt changes (for chat to use current prompt)
   useEffect(() => {
     systemPromptRef.current = systemPrompt;
   }, [systemPrompt]);
   
-  // Save prompt to MongoDB
   const handleSavePrompt = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
@@ -74,7 +62,7 @@ export default function Page() {
       if (response.ok) {
         setSavedPrompt(systemPrompt);
         setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 2000); // Hide success message after 2 seconds
+        setTimeout(() => setSaveSuccess(false), 2000);
       } else {
         console.error('Failed to save prompt');
       }
@@ -85,162 +73,53 @@ export default function Page() {
     }
   };
   
-  // Handle login
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsAuthenticating(true);
-    setLoginError('');
-
-    // Store the key temporarily
-    const testKey = loginKey.trim();
-    
-    if (!testKey) {
-      setLoginError('Please enter a secret key');
-      setIsAuthenticating(false);
-      return;
-    }
-
-    // Test the key by making a test request
-    try {
-      const testResponse = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${testKey}`,
-        },
-        body: JSON.stringify({
-          messages: [],
-          system: 'Test',
-          secretKey: testKey,
-        }),
-      });
-
-      if (testResponse.status === 401) {
-        setLoginError('Invalid secret key. Please try again.');
-        setIsAuthenticating(false);
-        return;
-      }
-
-      // If we get here, the key is valid (or server error, but we'll assume valid)
-      localStorage.setItem(SECRET_KEY_STORAGE, testKey);
-      setSecretKey(testKey);
-      setLoginKey('');
-    } catch {
-      // If it's a network error or other issue, we'll still store it and let the actual chat handle validation
-      localStorage.setItem(SECRET_KEY_STORAGE, testKey);
-      setSecretKey(testKey);
-      setLoginKey('');
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
-
-  // Handle logout
-  const handleLogout = () => {
-    localStorage.removeItem(SECRET_KEY_STORAGE);
-    setSecretKey(null);
-    setLoginKey('');
-  };
-
   const transport = useMemo(() => {
-    // This function is called later when sending messages, not during render
-    // The ref access happens inside prepareSendMessagesRequest callback, not during render
     const getSystemPrompt = () => systemPromptRef.current;
-    const getSecretKey = () => secretKey;
     
     return new DefaultChatTransport({
       api: '/api/chat',
       prepareSendMessagesRequest: ({ body, messages, headers, ...rest }) => {
-        // Include messages, system, and secret key in the body
         return {
           ...rest,
           headers: {
             ...headers,
-            'Authorization': `Bearer ${getSecretKey()}`,
           },
           body: {
             ...body,
             messages,
             system: getSystemPrompt(),
-            secretKey: getSecretKey(),
           },
         };
       },
     });
-  }, [secretKey]);
+  }, []);
   
   const { messages, sendMessage, status } = useChat({
     transport,
   });
 
-  // Show login screen if not authenticated
-  if (!secretKey) {
-    return (
-      <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-4">
-        <div className="w-full max-w-md border border-white rounded-lg overflow-hidden bg-white dark:bg-black shadow-sm p-6">
-          <h1 className="text-2xl font-bold mb-4 text-center">Chatbot Access</h1>
-          <p className="text-sm text-center mb-6 text-black dark:text-white opacity-70">
-            Please enter your secret key to access the chatbot
-          </p>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <input
-                type="password"
-                value={loginKey}
-                onChange={e => {
-                  setLoginKey(e.target.value);
-                  setLoginError('');
-                }}
-                placeholder="Enter secret key"
-                disabled={isAuthenticating}
-                className="w-full px-3 py-2 bg-white dark:bg-black border border-white rounded focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-                autoFocus
-              />
-              {loginError && (
-                <p className="text-red-500 text-xs mt-2">{loginError}</p>
-              )}
-            </div>
-            <button
-              type="submit"
-              disabled={isAuthenticating || !loginKey.trim()}
-              className="w-full px-4 py-2 bg-black text-white rounded font-medium hover:opacity-80 focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isAuthenticating ? 'Authenticating...' : 'Access Chatbot'}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-4">
-      <div className="w-full  flex border border-white rounded-lg overflow-hidden bg-white dark:bg-black shadow-sm h-[90vh]">
-        {/* Left Side: System Prompt Section (50%) */}
-        <div className="w-1/2 flex flex-col border-r border-white">
-          <div className="border-b border-white px-4 sm:px-6 py-3">
+      <div className="w-full  flex border border-gray-800 rounded-lg overflow-hidden bg-white dark:bg-black shadow-sm h-[90vh]">
+        <div className="w-1/2 flex flex-col border-r border-gray-800">
+          <div className="border-b border-gray-800 px-4 sm:px-6 py-3">
             <h2 className="text-lg sm:text-xl font-medium">System Prompt</h2>
           </div>
           <div className="flex-1 flex flex-col px-4 sm:px-6 py-4">
-            <div className="flex items-center justify-between mb-3">
-              {isLoadingPrompt && (
-                <span className="text-xs text-black dark:text-white">Loading...</span>
-              )}
-              {saveSuccess && (
+            {saveSuccess && (
+              <div className="mb-3">
                 <span className="text-xs text-black dark:text-white">Saved</span>
-              )}
-            </div>
+              </div>
+            )}
             <textarea
-              id="system-prompt"
               value={systemPrompt}
               onChange={e => setSystemPrompt(e.target.value)}
-              disabled={isLoadingPrompt}
-              placeholder={isLoadingPrompt ? "Loading prompt..." : "Enter your system prompt here..."}
-              className="flex-1 w-full px-3 py-2 text-sm bg-white dark:bg-black border border-white rounded focus:outline-none focus:ring-1 focus:ring-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed resize-none"
+              placeholder="Enter your system prompt here..."
+              className="flex-1 w-full px-3 py-2 text-sm bg-white dark:bg-black border border-gray-800 rounded focus:outline-none focus:ring-1 focus:ring-white transition-colors resize-none"
             />
             <button
               onClick={handleSavePrompt}
-              disabled={isLoadingPrompt || isSaving}
+              disabled={isSaving}
               className={`mt-3 px-4 py-2 rounded font-medium hover:opacity-80 focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm ${
                 hasUnsavedChanges 
                   ? 'bg-yellow-500 text-black' 
@@ -252,20 +131,11 @@ export default function Page() {
           </div>
         </div>
 
-        {/* Right Side: Chat Section (50%) */}
         <div className="w-1/2 flex flex-col">
-          <div className="border-b border-white px-4 sm:px-6 py-3 flex items-center justify-between">
+          <div className="border-b border-gray-800 px-4 sm:px-6 py-3">
             <h1 className="text-lg sm:text-xl font-medium">Chat</h1>
-            <button
-              onClick={handleLogout}
-              className="text-xs px-3 py-1 bg-gray-200 dark:bg-gray-800 text-black dark:text-white rounded hover:opacity-80 transition-colors"
-              title="Logout"
-            >
-              Logout
-            </button>
           </div>
 
-          {/* Messages Area */}
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-black dark:text-white">
@@ -307,8 +177,7 @@ export default function Page() {
             )}
           </div>
 
-          {/* Input Area */}
-          <div className="border-t border-white px-4 sm:px-6 py-3">
+        <div className="border-t border-gray-800 px-4 sm:px-6 py-3">
             <form
               onSubmit={e => {
                 e.preventDefault();
@@ -322,9 +191,8 @@ export default function Page() {
               <input
                 value={input}
                 onChange={e => setInput(e.target.value)}
-                disabled={status !== 'ready'}
                 placeholder="Type a message..."
-                className="flex-1 px-3 py-2 bg-white dark:bg-black border border-white rounded focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+                className="flex-1 px-3 py-2 bg-white dark:bg-black border border-gray-800 rounded focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
               />
               <button
                 type="submit"
