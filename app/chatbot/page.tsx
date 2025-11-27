@@ -1,9 +1,9 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport } from 'ai';
+import { DefaultChatTransport, type FileUIPart } from 'ai';
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Save, Send, MessageSquare, Settings, Check } from 'lucide-react';
+import { Save, Send, MessageSquare, Settings, Check, Image as ImageIcon, X } from 'lucide-react';
 
 export default function Page() {
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -12,6 +12,8 @@ export default function Page() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [savedPrompt, setSavedPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('grok-4-fast-reasoning');
+  const [selectedImages, setSelectedImages] = useState<Array<{ data: string; mimeType: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const systemPromptRef = useRef(systemPrompt);
   
   const hasUnsavedChanges = systemPrompt !== savedPrompt;
@@ -101,6 +103,33 @@ export default function Page() {
     transport,
   });
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    Array.from(files).forEach(file => {
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const result = event.target?.result as string;
+          // Extract base64 data and mime type
+          const base64Data = result.split(',')[1];
+          setSelectedImages(prev => [...prev, { data: base64Data, mimeType: file.type }]);
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+    
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-4">
       <div className="w-full  flex border border-gray-800 rounded-lg overflow-hidden bg-white dark:bg-[#040404] shadow-sm h-[90vh]">
@@ -176,16 +205,31 @@ export default function Page() {
                         : 'bg-white dark:bg-black border border-white text-black dark:text-white'
                     }`}
                   >
-                    <div className="text-sm whitespace-pre-wrap">
-                      {message.parts.map((part, index) =>
-                        part.type === 'text' ? <span key={index}>{part.text}</span> : null,
-                      )}
+                    <div className="text-sm whitespace-pre-wrap space-y-2">
+                      {message.parts.map((part, index) => {
+                        if (part.type === 'text') {
+                          return <span key={index}>{part.text}</span>;
+                        }
+                        if (part.type === 'file' && part.mediaType.startsWith('image/')) {
+                          return (
+                            <div key={index} className="mt-2">
+                              <img
+                                src={part.url}
+                                alt={part.filename || 'Uploaded image'}
+                                className="max-w-full h-auto rounded border border-gray-700"
+                                style={{ maxHeight: '300px' }}
+                              />
+                            </div>
+                          );
+                        }
+                        return null;
+                      })}
                     </div>
                   </div>
                 </div>
               ))
             )}
-            {status === 'streaming' && (
+            {(status === 'streaming' || status === 'submitted') && (
               <div className="flex justify-start">
                 <div className="bg-white dark:bg-black border border-white rounded px-3 py-2">
                   <div className="flex space-x-1">
@@ -199,16 +243,70 @@ export default function Page() {
           </div>
 
         <div className="border-t border-gray-800 px-4 sm:px-6 py-3">
+            {selectedImages.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {selectedImages.map((image, index) => (
+                  <div key={index} className="relative inline-block">
+                    <img
+                      src={`data:${image.mimeType};base64,${image.data}`}
+                      alt={`Preview ${index + 1}`}
+                      className="w-16 h-16 object-cover rounded border border-gray-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 hover:bg-red-600 transition-colors"
+                      aria-label="Remove image"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <form
               onSubmit={e => {
                 e.preventDefault();
-                if (input.trim() && status === 'ready') {
-                  sendMessage({ text: input });
+                if ((input.trim() || selectedImages.length > 0) && status === 'ready') {
+                  const parts: Array<{ type: 'text'; text: string } | FileUIPart> = [];
+                  
+                  // Add text if present
+                  if (input.trim()) {
+                    parts.push({ type: 'text', text: input });
+                  }
+                  
+                  // Add images as FileUIPart
+                  selectedImages.forEach(image => {
+                    parts.push({
+                      type: 'file',
+                      mediaType: image.mimeType,
+                      url: `data:${image.mimeType};base64,${image.data}`,
+                    });
+                  });
+                  
+                  sendMessage({ parts });
                   setInput('');
+                  setSelectedImages([]);
                 }
               }}
               className="flex gap-2 sm:gap-3"
             >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImageSelect}
+                accept="image/*"
+                multiple
+                className="hidden"
+                id="image-upload"
+              />
+              <label
+                htmlFor="image-upload"
+                className="px-3 py-2 bg-white dark:bg-black border border-gray-800 rounded font-medium hover:opacity-80 focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm flex items-center gap-2 cursor-pointer"
+                title="Upload images"
+              >
+                <ImageIcon className="w-4 h-4" />
+              </label>
               <input
                 value={input}
                 onChange={e => setInput(e.target.value)}
@@ -217,7 +315,7 @@ export default function Page() {
               />
               <button
                 type="submit"
-                disabled={status !== 'ready' || !input.trim()}
+                disabled={status !== 'ready' || (!input.trim() && selectedImages.length === 0)}
                 className="px-4 sm:px-6 py-2 bg-black border border-gray-800 text-white rounded font-medium hover:opacity-80 focus:outline-none focus:ring-1 focus:ring-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm flex items-center gap-2"
               >
                 <Send className="w-4 h-4" />
