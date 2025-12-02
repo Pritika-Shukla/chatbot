@@ -3,7 +3,7 @@
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, type FileUIPart } from 'ai';
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Save, Send, MessageSquare, Settings, Check, Image as ImageIcon, X } from 'lucide-react';
+import { Save, Send, MessageSquare, Settings, Check, Image as ImageIcon, X, Copy, RotateCcw, ChevronLeft, ChevronRight, AlertCircle } from 'lucide-react';
 
 export default function Page() {
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -13,6 +13,9 @@ export default function Page() {
   const [savedPrompt, setSavedPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('grok-4-fast-reasoning');
   const [selectedImages, setSelectedImages] = useState<Array<{ data: string; mimeType: string }>>([]);
+  const [responseSliders, setResponseSliders] = useState<Record<string, number>>({});
+  const [lastMessageId, setLastMessageId] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const systemPromptRef = useRef(systemPrompt);
   
@@ -99,25 +102,107 @@ export default function Page() {
     });
   }, [selectedModel]);
   
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, status, error: chatError } = useChat({
     transport,
+    onError: (error) => {
+      console.error('Chat error:', error);
+      setError(error.message || 'An error occurred while processing your request. Please try again.');
+    },
   });
+
+  // Clear error when status changes to ready
+  useEffect(() => {
+    if (status === 'ready' && error) {
+      // Don't auto-clear errors, let user dismiss them
+    }
+  }, [status, error]);
+
+  // Auto-navigate to the latest response when a new one is generated
+  useEffect(() => {
+    if (messages.length === 0) return;
+    
+    const lastMessage = messages[messages.length - 1];
+    
+    // Check if this is a new assistant message or if status changed to ready (streaming finished)
+    const isNewAssistantMessage = lastMessage.role === 'assistant' && lastMessage.id !== lastMessageId;
+    const isStreamingComplete = status === 'ready' && lastMessage.role === 'assistant';
+    
+    if (isNewAssistantMessage || isStreamingComplete) {
+      if (isNewAssistantMessage) {
+        setLastMessageId(lastMessage.id);
+      }
+      
+      // Find which group this belongs to
+      for (let i = messages.length - 2; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          const groupId = messages[i].id;
+          const groups = groupMessages();
+          const group = groups.find(g => g.groupId === groupId);
+          if (group && group.assistantMessages.length > 0) {
+            const totalSlides = group.assistantMessages.length;
+            const lastAssistantId = group.assistantMessages[totalSlides - 1]?.id;
+            
+            // Switch to the latest response in the group
+            if (lastAssistantId === lastMessage.id || isStreamingComplete) {
+              // Move to the last slide
+              setResponseSliders(prev => {
+                // Only update if we're not already on the last slide
+                const currentSlide = prev[groupId] ?? 0;
+                if (currentSlide !== totalSlides - 1) {
+                  return {
+                    ...prev,
+                    [groupId]: totalSlides - 1,
+                  };
+                }
+                return prev;
+              });
+            }
+          }
+          break;
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, status, lastMessageId]); // Trigger when messages, status, or lastMessageId changes
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
+    const supportedImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+    const maxFileSize = 10 * 1024 * 1024; // 10MB
+
     Array.from(files).forEach(file => {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const result = event.target?.result as string;
-          // Extract base64 data and mime type
-          const base64Data = result.split(',')[1];
-          setSelectedImages(prev => [...prev, { data: base64Data, mimeType: file.type }]);
-        };
-        reader.readAsDataURL(file);
+      // Check file type
+      if (!file.type.startsWith('image/')) {
+        setError(`Unsupported file type: ${file.name}. Please upload an image file (JPEG, PNG, GIF, WebP, or SVG).`);
+        return;
       }
+
+      // Check if it's a supported image format
+      if (!supportedImageTypes.includes(file.type)) {
+        setError(`Unsupported image format: ${file.name}. Supported formats: JPEG, PNG, GIF, WebP, SVG.`);
+        return;
+      }
+
+      // Check file size
+      if (file.size > maxFileSize) {
+        setError(`File too large: ${file.name}. Maximum file size is 10MB.`);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const result = event.target?.result as string;
+        // Extract base64 data and mime type
+        const base64Data = result.split(',')[1];
+        setSelectedImages(prev => [...prev, { data: base64Data, mimeType: file.type }]);
+        setError(null); // Clear error on success
+      };
+      reader.onerror = () => {
+        setError(`Failed to read file: ${file.name}. Please try again.`);
+      };
+      reader.readAsDataURL(file);
     });
     
     // Reset input so same file can be selected again
@@ -128,6 +213,113 @@ export default function Page() {
 
   const removeImage = (index: number) => {
     setSelectedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleRegenerate = (assistantMessageId: string) => {
+    // Find the index of the assistant message
+    const assistantIndex = messages.findIndex(msg => msg.id === assistantMessageId);
+    if (assistantIndex === -1) return;
+
+    // Find the preceding user message
+    const userMessage = messages[assistantIndex - 1];
+    if (!userMessage || userMessage.role !== 'user') return;
+
+    // Store the user message parts
+    const userMessageParts = userMessage.parts;
+
+    // Clear any previous errors
+    setError(null);
+
+    // Resend the user message to generate a new response
+    // This will keep all previous messages and add a new assistant response
+    sendMessage({ parts: userMessageParts });
+  };
+
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      console.error('Failed to copy text:', err);
+    }
+  };
+
+  // Group messages: each user message and its following assistant responses
+  const groupMessages = () => {
+    const groups: Array<{
+      userMessage: typeof messages[0];
+      assistantMessages: typeof messages;
+      groupId: string;
+    }> = [];
+    
+    const processedIndices = new Set<number>();
+    
+    const getUserContent = (msg: typeof messages[0]) => {
+      return msg.parts.map(part => {
+        if (part.type === 'text') return part.text;
+        if (part.type === 'file') return part.url || '';
+        return '';
+      }).join('|');
+    };
+    
+    for (let i = 0; i < messages.length; i++) {
+      if (processedIndices.has(i)) continue;
+      
+      const message = messages[i];
+      if (message.role === 'user') {
+        const assistantMessages: typeof messages = [];
+        const currentUserContent = getUserContent(message);
+        let j = i + 1; // Start after the user message
+        
+        // First, collect assistant messages immediately following this user message
+        while (j < messages.length && messages[j].role === 'assistant') {
+          assistantMessages.push(messages[j]);
+          processedIndices.add(j);
+          j++;
+        }
+        
+        // Then check for duplicate user messages (regenerations) and collect their assistant responses
+        while (j < messages.length) {
+          if (messages[j].role === 'user' && !processedIndices.has(j)) {
+            const userContent = getUserContent(messages[j]);
+            if (userContent === currentUserContent) {
+              // Same user message (regeneration), mark as processed
+              processedIndices.add(j);
+              j++;
+              // Collect assistant messages after this duplicate user message
+              while (j < messages.length && messages[j].role === 'assistant') {
+                assistantMessages.push(messages[j]);
+                processedIndices.add(j);
+                j++;
+              }
+            } else {
+              // Different user message, stop
+              break;
+            }
+          } else {
+            // Not a user message, stop
+            break;
+          }
+        }
+        
+        if (assistantMessages.length > 0) {
+          groups.push({
+            userMessage: message,
+            assistantMessages,
+            groupId: message.id,
+          });
+          processedIndices.add(i);
+        }
+      }
+    }
+    
+    return groups;
+  };
+
+  const setSliderIndex = (groupId: string, index: number, maxIndex: number) => {
+    setResponseSliders(prev => ({
+      ...prev,
+      [groupId]: Math.max(0, Math.min(index, maxIndex)),
+    }));
   };
 
   return (
@@ -187,58 +379,199 @@ export default function Page() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3">
+            {(error || chatError) && (
+              <div className="mb-3 p-3 bg-red-500/10 border border-red-500/50 rounded-lg flex items-start gap-2 animate-in slide-in-from-top-2">
+                <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-500">Error</p>
+                  <p className="text-xs text-red-400 mt-1">
+                    {error || chatError?.message || 'An error occurred while processing your request. Please try again.'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setError(null);
+                  }}
+                  className="text-xs text-red-400 hover:text-red-300 transition-colors p-1"
+                  title="Dismiss error"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-black dark:text-white">
                 <p className="text-sm">Start a conversation</p>
                 <p className="text-xs mt-1">Type a message to begin</p>
               </div>
             ) : (
-              messages.map(message => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[85%] rounded px-3 py-2 ${
-                      message.role === 'user'
-                        ? 'bg-black text-white'
-                        : 'bg-white dark:bg-black border border-white text-black dark:text-white'
-                    }`}
-                  >
-                    <div className="text-sm whitespace-pre-wrap space-y-2">
-                      {message.parts.map((part, index) => {
-                        if (part.type === 'text') {
-                          return <span key={index}>{part.text}</span>;
-                        }
-                        if (part.type === 'file' && part.mediaType.startsWith('image/')) {
-                          return (
-                            <div key={index} className="mt-2">
-                              <img
-                                src={part.url}
-                                alt={part.filename || 'Uploaded image'}
-                                className="max-w-full h-auto rounded border border-gray-700"
-                                style={{ maxHeight: '300px' }}
-                              />
+              (() => {
+                const groups = groupMessages();
+                const renderedMessageIds = new Set<string>();
+                
+                return groups.map((group) => {
+                  const currentSlide = responseSliders[group.groupId] ?? 0;
+                  const currentAssistantMessage = group.assistantMessages[currentSlide];
+                  const totalSlides = group.assistantMessages.length;
+                  
+                  // Mark messages as rendered
+                  renderedMessageIds.add(group.userMessage.id);
+                  group.assistantMessages.forEach(msg => renderedMessageIds.add(msg.id));
+                  
+                  // Extract text content for copying
+                  const textContent = currentAssistantMessage.parts
+                    .filter(part => part.type === 'text')
+                    .map(part => part.text)
+                    .join('');
+
+                  return (
+                    <div key={group.groupId} className="space-y-3">
+                      {/* User Message */}
+                      <div className="flex justify-end">
+                        <div className="max-w-[85%] rounded px-3 py-2 bg-black text-white">
+                          <div className="text-sm whitespace-pre-wrap space-y-2">
+                            {group.userMessage.parts.map((part, partIndex) => {
+                              if (part.type === 'text') {
+                                return <span key={partIndex}>{part.text}</span>;
+                              }
+                              if (part.type === 'file' && part.mediaType.startsWith('image/')) {
+                                return (
+                                  <div key={partIndex} className="mt-2">
+                                    <img
+                                      src={part.url}
+                                      alt={part.filename || 'Uploaded image'}
+                                      className="max-w-full h-auto rounded border border-gray-700"
+                                      style={{ maxHeight: '300px' }}
+                                    />
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Assistant Response Carousel */}
+                      <div className="flex justify-start">
+                        <div className="max-w-[85%] flex flex-col gap-2 w-full">
+                          {/* Carousel Container */}
+                          <div className="relative w-full">
+                            {/* Navigation Arrows */}
+                            {totalSlides > 1 && (
+                              <>
+                                <button
+                                  onClick={() => setSliderIndex(group.groupId, currentSlide - 1, totalSlides - 1)}
+                                  disabled={currentSlide === 0}
+                                  className="absolute left-4 top-1/2 -translate-y-1/2 -translate-x-10 bg-gray-700/80 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-full p-1.5 transition-all z-10 shadow-lg"
+                                  title="Previous response"
+                                >
+                                  <ChevronLeft className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => setSliderIndex(group.groupId, currentSlide + 1, totalSlides - 1)}
+                                  disabled={currentSlide === totalSlides - 1}
+                                  className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-10 bg-gray-700/80 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-full p-1.5 transition-all z-10 shadow-lg"
+                                  title="Next response"
+                                >
+                                  <ChevronRight className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                            <div className="bg-white dark:bg-black border border-white rounded px-3 py-2 ml-4">
+                              {(() => {
+                                // Check if we're streaming a new response for this group
+                                const isStreamingForThisGroup = 
+                                  (status === 'streaming' || status === 'submitted') && 
+                                  messages.length > 0 && 
+                                  messages[messages.length - 1].role === 'assistant' &&
+                                  group.assistantMessages.length > 0 &&
+                                  group.assistantMessages[group.assistantMessages.length - 1]?.id === messages[messages.length - 1].id &&
+                                  currentSlide === group.assistantMessages.length - 1;
+                                
+                                const hasContent = currentAssistantMessage.parts.length > 0;
+                                
+                                if (isStreamingForThisGroup && !hasContent) {
+                                  // Show loader only if there's no content yet
+                                  return (
+                                    <div className="flex space-x-1 py-2">
+                                      <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                      <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                      <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                    </div>
+                                  );
+                                }
+                                
+                                return (
+                                  <div className="text-sm whitespace-pre-wrap space-y-2">
+                                    {currentAssistantMessage.parts.map((part, partIndex) => {
+                                      if (part.type === 'text') {
+                                        return <span key={partIndex}>{part.text}</span>;
+                                      }
+                                      if (part.type === 'file' && part.mediaType.startsWith('image/')) {
+                                        return (
+                                          <div key={partIndex} className="mt-2">
+                                            <img
+                                              src={part.url}
+                                              alt={part.filename || 'Uploaded image'}
+                                              className="max-w-full h-auto rounded border border-gray-700"
+                                              style={{ maxHeight: '300px' }}
+                                            />
+                                          </div>
+                                        );
+                                      }
+                                      return null;
+                                    })}
+                                    {isStreamingForThisGroup && hasContent && (
+                                      <div className="flex space-x-1 mt-2">
+                                        <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                        <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                        <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
-                          );
-                        }
-                        return null;
-                      })}
+                          </div>
+
+                          {/* Response Counter */}
+                          {totalSlides > 1 && (
+                            <div className="flex items-center justify-center mt-2">
+                              <span className="text-xs text-gray-400">
+                                {currentSlide + 1}/{totalSlides}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Action Buttons */}
+                          {textContent && (
+                            <div className="flex gap-2 mt-1">
+                              <button
+                                onClick={() => handleCopy(textContent)}
+                                className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-white rounded flex items-center gap-1 transition-colors"
+                                title="Copy"
+                              >
+                                <Copy className="w-3 h-3" />
+                                Copy
+                              </button>
+                              <button
+                                onClick={() => handleRegenerate(currentAssistantMessage.id)}
+                                disabled={status !== 'ready'}
+                                className="px-2 py-1 text-xs bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded flex items-center gap-1 transition-colors"
+                                title="Regenerate"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Regenerate
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))
-            )}
-            {(status === 'streaming' || status === 'submitted') && (
-              <div className="flex justify-start">
-                <div className="bg-white dark:bg-black border border-white rounded px-3 py-2">
-                  <div className="flex space-x-1">
-                    <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-1.5 h-1.5 bg-black dark:bg-white rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                  </div>
-                </div>
-              </div>
+                  );
+                });
+              })()
             )}
           </div>
 
@@ -268,6 +601,9 @@ export default function Page() {
               onSubmit={e => {
                 e.preventDefault();
                 if ((input.trim() || selectedImages.length > 0) && status === 'ready') {
+                  // Clear any previous errors
+                  setError(null);
+                  
                   const parts: Array<{ type: 'text'; text: string } | FileUIPart> = [];
                   
                   // Add text if present
