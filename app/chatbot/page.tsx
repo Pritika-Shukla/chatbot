@@ -18,7 +18,7 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const systemPromptRef = useRef(systemPrompt);
-  
+  const [copy,setCopy] = useState(false);
   const hasUnsavedChanges = systemPrompt !== savedPrompt;
   
   useEffect(() => {
@@ -238,6 +238,8 @@ export default function Page() {
   const handleCopy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopy(true);
+      setTimeout(() => setCopy(false), 2000);
     } catch (err) {
       console.error('Failed to copy text:', err);
     }
@@ -552,8 +554,8 @@ export default function Page() {
                                 className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-white rounded flex items-center gap-1 transition-colors"
                                 title="Copy"
                               >
-                                <Copy className="w-3 h-3" />
-                                Copy
+                                {copy ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                                {copy ? 'Copied ' : 'Copy'}
                               </button>
                               <button
                                 onClick={() => handleRegenerate(currentAssistantMessage.id)}
