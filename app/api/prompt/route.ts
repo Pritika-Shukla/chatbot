@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
 
-const DB_NAME = 'grok';
-const COLLECTION_NAME = 'prompts';
+const DB_NAME = 'test-db-maga-patriot';
+const COLLECTION_NAME = 'SystemPrompt';
 
 export async function GET() {
   try {
@@ -10,10 +10,10 @@ export async function GET() {
     const db = client.db(DB_NAME);
     const collection = db.collection(COLLECTION_NAME);
 
-    const promptDoc = await collection.findOne({ id: 'system' });
+    const promptDoc = await collection.findOne({});
 
     return NextResponse.json({
-      prompt: promptDoc?.prompt || 'You are a helpful assistant.',
+      prompt: promptDoc?.xaiSystemPrompt || 'You are a helpful assistant.',
     });
   } catch (error) {
     console.error('Error fetching prompt:', error);
@@ -41,17 +41,28 @@ export async function POST(req: Request) {
     const collection = db.collection(COLLECTION_NAME);
 
     // Upsert the prompt (update if exists, insert if not)
-    await collection.updateOne(
-      { id: 'system' },
-      {
-        $set: {
-          id: 'system',
-          prompt: prompt,
-          updatedAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
+    const existingDoc = await collection.findOne({});
+    const now = new Date();
+    
+    if (existingDoc) {
+      // Update existing document
+      await collection.updateOne(
+        { _id: existingDoc._id },
+        {
+          $set: {
+            xaiSystemPrompt: prompt,
+            updatedAt: now,
+          },
+        }
+      );
+    } else {
+      // Insert new document
+      await collection.insertOne({
+        xaiSystemPrompt: prompt,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     return NextResponse.json({ success: true, prompt });
   } catch (error) {
